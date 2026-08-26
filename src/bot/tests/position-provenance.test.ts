@@ -23,6 +23,11 @@ import {
   SPRAY_BUY_ORDER_SOURCE,
   MARGIN_SEED_FROM_CASH_ORDER_SOURCE,
   CASH_SEED_FROM_MARGIN_ORDER_SOURCE,
+  isOwnerDirectedOrderSource,
+  isSecretAutoSeedOrderSource,
+  isSprayBuyOrderSource,
+  isOvernightReductionOrderSource,
+  isMarginSeedFromCashOrderSource,
 } from "../order-sources";
 import { isEvaluationDoNotTouch } from "../do-not-touch-groups";
 import { localTimeAt } from "./test-clock";
@@ -104,6 +109,22 @@ describe("order-source classification", () => {
     assert.equal(classifyOrderSource("tastytrade-golden-lion-secret-auto-seed"), "bot");
   });
 
+  it("recognises the NEW system-first source as BOT (order-source migration)", () => {
+    // Stage 2 of the rename flips placement to `silver-lynx-tastytrade*`. Once
+    // deployed, the bot's own orders carry the new tag; classifying them MANUAL
+    // would disarm their stops — the failure this whole module guards against.
+    for (const source of [
+      "silver-lynx-tastytrade",
+      "silver-lynx-tastytrade-spray-buy",
+      "silver-lynx-tastytrade-secret-auto-seed",
+      "silver-lynx-golden-lion",
+      "silver-lynx-golden-lion-overnight-reduction",
+    ]) {
+      assert.equal(classifyOrderSource(source), "bot", `${source} should be bot`);
+      assert.equal(isBotOrderSource(source), true);
+    }
+  });
+
   it("classifies a foreign source as MANUAL", () => {
     for (const source of ["tastytrade-web", "tastyworks-desktop", "MANUAL", "iOS"]) {
       assert.equal(classifyOrderSource(source), "manual", `${source} should be manual`);
@@ -124,6 +145,39 @@ describe("order-source classification", () => {
     assert.equal(classifyOrderSource(OWNER_DIRECTED_ORDER_SOURCE), "owner-directed");
     assert.equal(isDoNotTouchProvenance("owner-directed"), true);
   });
+});
+
+// The cancel-sweep spares resting slices (spray-buy, seeds, overnight reduction)
+// and the owner-directed conviction order via per-subsystem predicates that key on
+// the source SUFFIX. Stage 2 of the rename flips the brand prefix while legacy and
+// in-flight orders keep the old one, so each predicate MUST match its suffix under
+// EVERY brand era or a legacy resting slice gets swept the moment placement flips.
+describe("per-subsystem source predicates are brand-agnostic (order-source migration)", () => {
+  const BRANDS = [
+    "silver-lynx-tastytrade", // NEW system-first (stage-2 placement)
+    "silver-lynx-golden-lion", // NEW golden-lion line
+    "tastytrade-silver-lynx", // OLD venue-first (stage-1 placement + in-flight)
+    "tastytrade-golden-lion", // pre-2026-07-27 self-brand
+  ];
+
+  const CASES: Array<[string, (s: string) => boolean]> = [
+    ["-owner-directed", isOwnerDirectedOrderSource],
+    ["-secret-auto-seed", isSecretAutoSeedOrderSource],
+    ["-spray-buy", isSprayBuyOrderSource],
+    ["-overnight-reduction", isOvernightReductionOrderSource],
+    ["-margin-seed-from-cash", isMarginSeedFromCashOrderSource],
+  ];
+
+  for (const [suffix, predicate] of CASES) {
+    it(`matches ${suffix} under every brand era`, () => {
+      for (const brand of BRANDS) {
+        assert.equal(predicate(`${brand}${suffix}`), true, `${brand}${suffix}`);
+      }
+      // Must NOT match a different suffix or a bare foreign source.
+      assert.equal(predicate("silver-lynx-tastytrade-spray-buy-extra"), false);
+      assert.equal(predicate("tastytrade-web"), false);
+    });
+  }
 });
 
 describe("group rollup", () => {

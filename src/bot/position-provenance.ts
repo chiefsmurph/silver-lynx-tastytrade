@@ -51,7 +51,7 @@
 import { TastytradeOrder } from "~/core/types";
 import { readEnvBool, readEnvInt } from "~/core/env-utils";
 import { buildGroupKey, getOrderGroupKey } from "./do-not-touch-groups";
-import { isOwnerDirectedOrderSource } from "./order-sources";
+import { isBotOrderSource, isOwnerDirectedOrderSource } from "./order-sources";
 
 export type PositionProvenance = "bot" | "manual" | "owner-directed" | "unknown";
 
@@ -69,32 +69,17 @@ export function isManagedProvenance(provenance: PositionProvenance): boolean {
   return !isDoNotTouchProvenance(provenance);
 }
 
-/**
- * Source prefixes this bot has ever written to the broker.
- *
- * `tastytrade-golden-lion` is LOAD-BEARING, not dead weight: commit efda628
- * (2026-07-27) renamed the self-brand, so every order this bot placed before
- * that date is sitting at the broker tagged `tastytrade-golden-lion*`. Dropping
- * the legacy prefix would classify those genuinely-bot positions as `manual`
- * and auto-disarm their stops — the exact failure this module exists to avoid.
- * Never remove it; the broker's history is immutable.
- */
-const BOT_ORDER_SOURCE_PREFIXES = [
-  "tastytrade-silver-lynx",
-  "tastytrade-golden-lion",
-] as const;
-
 /** Opening actions. A position's provenance is decided by who OPENED it. */
 const OPENING_ACTIONS = new Set(["Buy to Open", "Sell to Open", "Buy", "Allocate"]);
 
 /** Terminal statuses that actually moved contracts. A rejected order opened nothing. */
 const FILLED_STATUSES = new Set(["filled", "partially filled"]);
 
-export function isBotOrderSource(source: string | null | undefined): boolean {
-  const normalized = String(source ?? "").trim().toLowerCase();
-  if (!normalized) return false;
-  return BOT_ORDER_SOURCE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
-}
+// `isBotOrderSource` — including its dual-aware, migration-safe list of every
+// brand-era prefix the bot has ever stamped — lives in `order-sources.ts`, the
+// single source of truth for source classification. Re-exported here so existing
+// importers of `~/bot/position-provenance` keep working unchanged.
+export { isBotOrderSource };
 
 /**
  * Classify ONE order's source string.

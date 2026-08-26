@@ -41,6 +41,16 @@ describe("cancel sweep — source protection gate", () => {
     assert.equal(isSweepEligibleSource("tastytrade-golden-lion-spray-buy"), true);
   });
 
+  it("recognises the NEW system-first brand as ours (order-source migration)", () => {
+    // Stage 2 of the rename flips placement to `silver-lynx-tastytrade*`. The
+    // sweep must already know that form (deployed stage-1) or it would stop
+    // recognising its OWN freshly-placed orders and leave them resting.
+    assert.equal(isSweepEligibleSource("silver-lynx-tastytrade"), true);
+    assert.equal(isSweepEligibleSource("silver-lynx-tastytrade-overnight-reduction"), true);
+    // The new form of the legacy golden-lion line, for completeness.
+    assert.equal(isSweepEligibleSource("silver-lynx-golden-lion"), true);
+  });
+
   it("NEVER sweeps a hand-placed order (tastytrade UI / Copper Jaguar / other)", () => {
     for (const source of ["copper-jaguar", "tastytrade-web", "tastyworks-desktop", "iOS", "MANUAL"]) {
       assert.equal(isSweepEligibleSource(source), false, `${source} is hand-placed, leave it alone`);
