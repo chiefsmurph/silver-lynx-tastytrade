@@ -21,22 +21,22 @@
 
 // PLACEMENT constants — stamped on newly-submitted orders.
 //
-// STAGE 1 (this commit): still the OLD venue-first form. The matchers below are
-// now dual-aware, but placement is deliberately UNCHANGED so this commit can ship
-// on its own and be verified before any newly-placed order carries the new tag.
-// STAGE 2 flips these to `silver-lynx-tastytrade*` in a separate commit.
-export const BOT_ORDER_SOURCE = "tastytrade-silver-lynx";
+// STAGE 2 (this commit): flipped to the NEW system-first form. Safe ONLY because
+// stage 1 (dual-aware matchers) is already live — the sweep/provenance/P&L already
+// recognise this tag. The legacy `tastytrade-silver-lynx*` forms remain matched
+// forever for in-flight and historical orders. See docs/ORDER-SOURCE-MIGRATION.md.
+export const BOT_ORDER_SOURCE = "silver-lynx-tastytrade";
 export const MARGIN_SEED_FROM_CASH_ORDER_SOURCE =
-  "tastytrade-silver-lynx-margin-seed-from-cash";
+  "silver-lynx-tastytrade-margin-seed-from-cash";
 export const CASH_SEED_FROM_MARGIN_ORDER_SOURCE =
-  "tastytrade-silver-lynx-cash-seed-from-margin";
-export const SECRET_AUTO_SEED_ORDER_SOURCE = "tastytrade-silver-lynx-secret-auto-seed";
+  "silver-lynx-tastytrade-cash-seed-from-margin";
+export const SECRET_AUTO_SEED_ORDER_SOURCE = "silver-lynx-tastytrade-secret-auto-seed";
 export const OVERNIGHT_REDUCTION_ORDER_SOURCE =
-  "tastytrade-silver-lynx-overnight-reduction";
+  "silver-lynx-tastytrade-overnight-reduction";
 // Spray-buy slices carry this source so the per-cycle cancel sweep leaves resting
 // limit slices in place across cycles (a spray spans several ~4min cycles). The
 // spray executor owns their lifecycle: it fills, expires (Day TIF), or aborts them.
-export const SPRAY_BUY_ORDER_SOURCE = "tastytrade-silver-lynx-spray-buy";
+export const SPRAY_BUY_ORDER_SOURCE = "silver-lynx-tastytrade-spray-buy";
 
 /**
  * OWNER-DIRECTED: placed BY this process but expressing the OWNER's conviction,
@@ -48,7 +48,7 @@ export const SPRAY_BUY_ORDER_SOURCE = "tastytrade-silver-lynx-spray-buy";
  *
  * No producer yet — wiring the SMS path means passing this as `orderSource`.
  */
-export const OWNER_DIRECTED_ORDER_SOURCE = "tastytrade-silver-lynx-owner-directed";
+export const OWNER_DIRECTED_ORDER_SOURCE = "silver-lynx-tastytrade-owner-directed";
 
 // ---------------------------------------------------------------------------
 // SUFFIXES + PREFIX FAMILIES (the migration back-compat layer).

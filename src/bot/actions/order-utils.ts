@@ -168,7 +168,7 @@ export function buildClosingOrderPayload(
   );
 
   return {
-    source: source ?? "tastytrade-silver-lynx",
+    source: source ?? "silver-lynx-tastytrade",
     "time-in-force": "Day",
     "order-type": "Limit",
     price: roundOrderPrice(price, tickSizesForInstrument(instrumentType)),
