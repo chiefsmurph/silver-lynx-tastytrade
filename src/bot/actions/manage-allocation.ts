@@ -41,7 +41,7 @@ import {
   isAllocationBlockedByInstrumentGuard,
   logSuppressedAllocation,
 } from "../allocation-instrument-guard";
-import { readEnvInt, readEnvPct, toBooleanFlag } from "~/core/env-utils";
+import { readEnvBool, readEnvFraction, readEnvInt, readEnvPct, toBooleanFlag } from "~/core/env-utils";
 
 // Budget helpers live in a leaf module to keep this file out of the
 // effective-buying-power import cycle; re-exported for existing consumers.
@@ -52,7 +52,10 @@ export {
 } from "../allocation-budget";
 
 
-export type AllocationRoute = "bid" | "mid" | "ask";
+// "rung" is the resting-ladder route (see the RESTING LADDER block below): a
+// limit order that sits at a fixed price inside the bid→ask band and never
+// chases. bid/mid/ask are the legacy chase routes.
+export type AllocationRoute = "bid" | "mid" | "ask" | "rung";
 
 export interface AllocationRouteResult {
   estimatedOrderValue: number;
@@ -102,11 +105,172 @@ function getCandidateSide(evaluation: PositionGroupEvaluation): "call" | "put" {
   return inferredSides[0] ?? "call";
 }
 
+// ── RESTING LADDER execution mode ────────────────────────────────────────────
+// The legacy path builds three chase routes (bid/mid/ask) whose weight schedule
+// is ask-heavy as the morning progresses, and allocateContractsByWeight's
+// floor+greedy sizing tends to pile a cheap contract's whole lot onto one route
+// (see the diagnostic at the bottom of placeRouteOrders). The net effect is a
+// single ask-chasing lump. The resting ladder is the opposite: N patient limit
+// orders spread across the bid→ask band that SIT and fill on dips, with the
+// quantity split as evenly as possible across the rungs.
+//
+// The whole feature is OFF unless STRATEGY_RESTING_LADDER_ENABLED is truthy, so
+// with the flag off buildRouteOrders / allocateContractsByWeight are byte for
+// byte the current three-route behavior. Nothing below runs until the human
+// flips the flag on.
+
+// Master flag. Default OFF → buildRouteOrders keeps the 3-route chase path.
+export function isRestingLadderEnabled(): boolean {
+  return readEnvBool("STRATEGY_RESTING_LADDER_ENABLED", false);
+}
+
+// How many resting rungs to spread across the band. Clamped to [1, 20]. The
+// effective count is further capped by the contract count in the sizing step —
+// you can't have more rungs than contracts.
+export function getRestingLadderRungCount(): number {
+  const raw = readEnvInt("STRATEGY_RESTING_LADDER_RUNGS", 5, (n) => n >= 1);
+  return Math.max(1, Math.min(20, raw));
+}
+
+// The band the rungs occupy, as fractions of the bid→ask spread measured FROM
+// THE BID. Both are clamped to [0, 1] and ordered so top ≥ bottom. Defaults
+// place every rung strictly inside the spread and never at/above the ask:
+//   bottom 0.00 → deepest rung rests AT the bid (a genuinely patient order)
+//   top    0.80 → shallowest rung rests at bid + 80% of the spread (below mid+;
+//                 well under the ask, so no rung is a marketable ask-chase)
+// A one-rung ladder rests at the midpoint of [bottom, top].
+export function getRestingLadderBandBottomFraction(): number {
+  const raw = readEnvFraction("STRATEGY_RESTING_LADDER_BAND_BOTTOM_PCT", 0.0);
+  return Math.max(0, Math.min(1, raw));
+}
+export function getRestingLadderBandTopFraction(): number {
+  const raw = readEnvFraction("STRATEGY_RESTING_LADDER_BAND_TOP_PCT", 0.8);
+  return Math.max(0, Math.min(1, raw));
+}
+
+// Build the resting-ladder rung prices inside the bid→ask band. Returns rung
+// limit prices from DEEPEST (near/at the bid) to SHALLOWEST (near the top of the
+// band), each strictly below the ask by construction. Every rung carries an
+// equal weight of 1 — the ladder splits quantity evenly, not by a schedule.
+// Falls back to the midpoint when the quote is one-sided or degenerate.
+export function buildRestingLadderRouteOrders(
+  bid: number,
+  ask: number,
+  rungCount: number = getRestingLadderRungCount(),
+): AllocationRouteResult[] {
+  const midpoint = getMidpointPrice(bid, ask);
+  const rungs = Math.max(1, Math.floor(rungCount));
+
+  // One-sided or crossed/degenerate quote: no real band to spread across. Rest
+  // the whole ladder at a single safe price (the midpoint) rather than invent a
+  // band around a price we don't have.
+  if (!(bid > 0) || !(ask > bid)) {
+    return midpoint > 0
+      ? [
+          {
+            estimatedOrderValue: 0,
+            limitPrice: midpoint,
+            placedOrder: false,
+            quantity: 0,
+            route: "rung" as const,
+            weight: 1,
+          },
+        ]
+      : [];
+  }
+
+  const spread = ask - bid;
+  const bottom = getRestingLadderBandBottomFraction();
+  const top = Math.max(bottom, getRestingLadderBandTopFraction());
+
+  const routeOrders: AllocationRouteResult[] = [];
+  for (let i = 0; i < rungs; i += 1) {
+    // Even placement across [bottom, top]. A single rung sits at the band's
+    // midpoint; multiple rungs span bottom→top inclusive.
+    const t = rungs === 1 ? (bottom + top) / 2 : bottom + ((top - bottom) * i) / (rungs - 1);
+    const limitPrice = bid + spread * t;
+    if (limitPrice > 0) {
+      routeOrders.push({
+        estimatedOrderValue: 0,
+        limitPrice,
+        placedOrder: false,
+        quantity: 0,
+        route: "rung" as const,
+        weight: 1,
+      });
+    }
+  }
+
+  return routeOrders;
+}
+
+// Split a total contract quantity as evenly as possible across resting rungs.
+// The quantity is derived the same way the legacy path would size the WHOLE
+// ladder — Math.floor(availableCapital / cheapest-rung-cost) is NOT used;
+// instead we spend against the average rung cost so the even split fits the
+// budget. If quantity < rungs we drop the shallowest rungs (keep the deepest,
+// best-priced ones) so we never place more rungs than contracts and never put
+// the whole quantity on one rung when we don't have to. No-op on empty capital.
+export function allocateContractsAcrossRungs(
+  routeOrders: AllocationRouteResult[],
+  availableCapital: number,
+): AllocationRouteResult[] {
+  if (routeOrders.length === 0 || availableCapital <= 0) {
+    return routeOrders;
+  }
+
+  // Zero every rung first so a re-used array can't carry stale sizing.
+  for (const routeOrder of routeOrders) {
+    routeOrder.quantity = 0;
+    routeOrder.estimatedOrderValue = 0;
+  }
+
+  // Total contracts affordable, sized against the AVERAGE rung cost so the even
+  // split actually fits the budget (sizing against the cheapest rung would
+  // over-buy once the split lands on the pricier rungs).
+  const rungCosts = routeOrders.map((routeOrder) => routeOrder.limitPrice * 100);
+  const averageCost =
+    rungCosts.reduce((sum, cost) => sum + cost, 0) / rungCosts.length;
+  if (!(averageCost > 0)) {
+    return routeOrders;
+  }
+
+  const totalContracts = Math.floor(availableCapital / averageCost);
+  if (totalContracts < 1) {
+    return routeOrders;
+  }
+
+  // Can't have more rungs than contracts. Keep the DEEPEST (best-priced) rungs —
+  // buildRestingLadderRouteOrders emits deepest-first, so slice from the front.
+  const activeRungCount = Math.min(routeOrders.length, totalContracts);
+  const activeRungs = routeOrders.slice(0, activeRungCount);
+
+  // Even split: base lots to every active rung, then hand the remainder one at a
+  // time to the DEEPEST rungs (front of the array = best price).
+  const base = Math.floor(totalContracts / activeRungCount);
+  let remainder = totalContracts - base * activeRungCount;
+  for (const routeOrder of activeRungs) {
+    let quantity = base;
+    if (remainder > 0) {
+      quantity += 1;
+      remainder -= 1;
+    }
+    routeOrder.quantity = quantity;
+    routeOrder.estimatedOrderValue = quantity * routeOrder.limitPrice * 100;
+  }
+
+  return routeOrders;
+}
+
 export function buildRouteOrders(
   bid: number,
   ask: number,
   targets: Pick<ExecutionTargets, "bidWeight" | "midWeight" | "askWeight">,
 ): AllocationRouteResult[] {
+  if (isRestingLadderEnabled()) {
+    return buildRestingLadderRouteOrders(bid, ask);
+  }
+
   const midpoint = getMidpointPrice(bid, ask);
 
   return [
@@ -141,6 +305,14 @@ export function allocateContractsByWeight(
   routeOrders: AllocationRouteResult[],
   availableCapital: number,
 ): AllocationRouteResult[] {
+  // Resting-ladder routes are sized by an EVEN split, not the weight schedule.
+  // Detecting the rung route (rather than re-reading the flag) keeps sizing and
+  // pricing in lockstep: whatever buildRouteOrders emitted gets sized the right
+  // way, even when these functions are exercised directly.
+  if (routeOrders.some((routeOrder) => routeOrder.route === "rung")) {
+    return allocateContractsAcrossRungs(routeOrders, availableCapital);
+  }
+
   const totalWeight = routeOrders.reduce(
     (sum, routeOrder) => sum + routeOrder.weight,
     0,
@@ -287,14 +459,29 @@ export interface RouteChasePlan {
 //         immediacy with a real attempt at spread capture. When the spread is
 //         within two min-ticks there is nothing to capture — go straight to
 //         the ask.
+//   rung — resting-ladder rung: sit at its OWN limit price (restPrice) and
+//          never chase (maxTicks 0). The next cycle's cancel-sweep re-evaluates.
 export function getRouteChasePlan(
   route: AllocationRoute,
   bid: number,
   ask: number,
+  restPrice?: number,
 ): RouteChasePlan {
   const midpoint = getMidpointPrice(bid, ask);
   const ceilingPrice = ask > 0 ? ask : midpoint;
   const minTick = midpoint < 3 ? 0.05 : 0.1;
+
+  if (route === "rung") {
+    // Rest at the rung's own price; if none was supplied fall back to the
+    // midpoint (defensive — a laddered route always carries a limit price).
+    const rest = restPrice && restPrice > 0 ? restPrice : midpoint;
+    return {
+      ceilingPrice: rest,
+      maxTicks: 0,
+      startPrice: rest,
+      tickIntervalMs: TICK_UP_INTERVAL_MS,
+    };
+  }
 
   if (route === "bid") {
     const restPrice = bid > 0 ? bid : midpoint;
@@ -503,7 +690,15 @@ export async function placeRouteOrders(
 
     const effectiveBid = bidPrice > 0 ? bidPrice : routeOrder.limitPrice;
     const effectiveAsk = askPrice > 0 ? askPrice : routeOrder.limitPrice;
-    const plan = getRouteChasePlan(routeOrder.route, effectiveBid, effectiveAsk);
+    // Resting rungs rest at their OWN limit price; pass it so the plan sits
+    // there with maxTicks 0 (no chase). Legacy routes derive their plan from
+    // bid/ask and ignore the extra arg.
+    const plan = getRouteChasePlan(
+      routeOrder.route,
+      effectiveBid,
+      effectiveAsk,
+      routeOrder.route === "rung" ? routeOrder.limitPrice : undefined,
+    );
     const midPrice = getMidpointPrice(effectiveBid, effectiveAsk);
 
     const lastOrderResponse = await chaseRouteOrderFill(
