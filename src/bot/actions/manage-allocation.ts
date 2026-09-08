@@ -449,11 +449,22 @@ export interface RouteChasePlan {
   tickIntervalMs: number;
 }
 
+// Minimum depth below mid for the bid route (spread-independent floor, mirrors
+// Larry's LC_LADDER_DEPTH_PCT). On tight spreads the natural bid is too close
+// to mid to give meaningful resting room; this floor extends below the bid.
+// Env: STRATEGY_BID_ROUTE_MIN_DEPTH_PCT (default 0.06). Only applies when a
+// valid two-sided quote is present; degenerate quotes fall back to the natural bid.
+export function getMinBidRouteDepthPct(): number {
+  const raw = readEnvPct("STRATEGY_BID_ROUTE_MIN_DEPTH_PCT", 0.06);
+  return Math.min(Math.max(0, raw), 0.20);
+}
+
 // Route semantics (redesigned 2026-07-03 — IMPROVEMENTS.v4 strategy #9): the
 // route name describes how much of the spread the order concedes and how
 // fast, not just a starting price. Previously every route chased to the full
 // ask, and the ask route paid the whole spread instantly.
-//   bid — rest at the bid, never chase (a genuinely patient order).
+//   bid — rest at or below the bid, never chase (a genuinely patient order).
+//         On tight spreads a minimum-depth floor kicks in (see getMinBidRouteDepthPct).
 //   mid — start at mid, concede at most MID_ROUTE_MAX_TICKS ticks.
 //   ask — start at MID and chase to the full ask on the fast clock:
 //         immediacy with a real attempt at spread capture. When the spread is
@@ -484,7 +495,12 @@ export function getRouteChasePlan(
   }
 
   if (route === "bid") {
-    const restPrice = bid > 0 ? bid : midpoint;
+    const naturalBid = bid > 0 ? bid : midpoint;
+    let restPrice = naturalBid;
+    if (bid > 0 && ask > bid) {
+      const floorPrice = midpoint * (1 - getMinBidRouteDepthPct());
+      restPrice = Math.min(naturalBid, floorPrice);
+    }
     return {
       ceilingPrice: restPrice,
       maxTicks: 0,

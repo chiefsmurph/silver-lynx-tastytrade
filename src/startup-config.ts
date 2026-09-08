@@ -23,6 +23,7 @@ import {
   getStopLossMidConfirmFloor,
   isStopLossMidConfirmEnabled,
 } from "~/strategy/evaluate-trading-strategy";
+import { getMinBidRouteDepthPct } from "~/bot/actions/manage-allocation";
 import { getSprayBuyConfigSnapshot } from "~/bot/actions/spray-buy";
 
 export interface EnvNameFinding {
@@ -179,6 +180,7 @@ export function getStartupConfigSnapshot(
       seedSizingFloorPct: getSeedSizingFloorPct(),
       seedSizingCeilingPct: getSeedSizingCeilingPct(),
       marginMaxTotalUtilization: getMarginMaxTotalUtilization(),
+      bidRouteMinDepthPct: getMinBidRouteDepthPct(),
       sprayBuy: getSprayBuyConfigSnapshot(),
     };
   } catch (error) {
