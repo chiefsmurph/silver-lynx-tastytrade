@@ -63,8 +63,9 @@ async function fetchOrderSources(
   account: string,
   startDate: string,
 ): Promise<Map<string, string>> {
-  const { rows, audit } = await fetchAllPages((params) =>
-    orders.getOrders(account, { "start-date": startDate, ...params }),
+  const { rows, audit } = await fetchAllPages(
+    (params) => orders.getOrders(account, { "start-date": startDate, ...params }),
+    100, // the orders endpoint hard-caps per-page at 100 and 400s on anything larger (transactions allow 250)
   );
   if (audit.incomplete) {
     console.log(

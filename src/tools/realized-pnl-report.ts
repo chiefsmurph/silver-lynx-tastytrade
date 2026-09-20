@@ -320,7 +320,7 @@ export interface PagedFetchResult {
  * would concatenate the same rows N times and report a doubled P&L. With the
  * dedupe the worst case is reading less and saying so.
  */
-export async function fetchAllPages(fetchPage: ListFetcher): Promise<PagedFetchResult> {
+export async function fetchAllPages(fetchPage: ListFetcher, perPage: number = LEDGER_PER_PAGE): Promise<PagedFetchResult> {
   const pages: LedgerPage[] = [];
   const seen = new Set<string>();
   const rows: unknown[] = [];
@@ -329,7 +329,7 @@ export async function fetchAllPages(fetchPage: ListFetcher): Promise<PagedFetchR
 
   for (let offset = 0; pages.length < LEDGER_MAX_PAGES; offset += 1) {
     const res = await fetchPage({
-      "per-page": LEDGER_PER_PAGE,
+      "per-page": perPage,
       "page-offset": offset,
     }).catch((cause: Error) => {
       error = cause?.message ?? String(cause);
@@ -343,7 +343,7 @@ export async function fetchAllPages(fetchPage: ListFetcher): Promise<PagedFetchR
 
     const before = rows.length;
     page.items.forEach((row, index) => {
-      const identity = rowIdentity(row, offset * LEDGER_PER_PAGE + index);
+      const identity = rowIdentity(row, offset * perPage + index);
       if (seen.has(identity)) return;
       seen.add(identity);
       rows.push(row);
@@ -355,7 +355,7 @@ export async function fetchAllPages(fetchPage: ListFetcher): Promise<PagedFetchR
       break;
     }
     if (page.totalPages !== null && offset + 1 >= page.totalPages) break;
-    if (page.totalPages === null && page.items.length < LEDGER_PER_PAGE) break;
+    if (page.totalPages === null && page.items.length < perPage) break;
   }
 
   return {
