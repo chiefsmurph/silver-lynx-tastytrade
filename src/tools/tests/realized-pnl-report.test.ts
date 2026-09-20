@@ -418,6 +418,32 @@ test("equity P&L never blends into the options P&L", () => {
   assert.notEqual(mixed.equity.totals.netPnl, mixed.totals.netPnl);
 });
 
+test("option round trips split by who closed them, and the split prints only with attribution", () => {
+  // The base option fixtures carry no order-id; a real close does, which is the join key to its source.
+  const closeWithOrder: LedgerRow = { ...CLOSE_ROW, "order-id": "900000002" };
+  // Bot-closed: the option close order (900000002) carries a bot source prefix.
+  const botClosed = buildRealizedPnlReport([OPEN_ROW, closeWithOrder], { orderSources: BOT_SOURCES });
+  assert.equal(botClosed.trips[0]!.closedBy, "bot");
+  assert.equal(botClosed.byCloser.bot.trips, 1);
+  assert.equal(botClosed.byCloser.owner.trips, 0);
+  assert.ok(near(botClosed.byCloser.bot.netPnl, botClosed.totals.netPnl), "the whole P&L is the bot's");
+  assert.ok(formatRealizedPnlReport(botClosed).some((l) => l.includes("BOT-EXECUTED")), "the split is printed");
+
+  // Hand-closed: same close order id, but a non-bot source → owner.
+  const handClosed = buildRealizedPnlReport([OPEN_ROW, closeWithOrder], {
+    orderSources: new Map([["900000002", "tastytrade-web"]]),
+  });
+  assert.equal(handClosed.byCloser.owner.trips, 1);
+  assert.equal(handClosed.byCloser.bot.trips, 0);
+  assert.ok(formatRealizedPnlReport(handClosed).some((l) => l.includes("owner-placed")));
+
+  // No order history → everything is "unknown" → the split restates the blend, so it is NOT printed.
+  const noHistory = buildRealizedPnlReport([OPEN_ROW, CLOSE_ROW]);
+  assert.equal(noHistory.byCloser.unknown.trips, 1);
+  const lines = formatRealizedPnlReport(noHistory).join("\n");
+  assert.ok(!/BOT-EXECUTED|owner-placed|unattributed/.test(lines), "no split without attribution");
+});
+
 test("a zero-share equity row is a dividend, not a close of the whole position", () => {
   // The options matcher treats a quantity-less terminal row as "remove the rest
   // of the position at $0". Applied to equity that invents a −100% round trip out

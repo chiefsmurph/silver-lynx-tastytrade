@@ -31,14 +31,45 @@
 // file only supplies the broker calls and prints.
 import { config } from "dotenv";
 
+import { writeFileSync } from "node:fs";
+
 import {
   buildOrderSourceIndex,
   buildRealizedPnlReport,
   fetchAllPages,
   formatRealizedPnlReport,
+  type CloserSlice,
+  type RealizedPnlReport,
 } from "./realized-pnl-report";
 
 config();
+
+// Optional machine-readable side-output for the Owl dashboard: set REALIZED_PNL_JSON to a path and
+// the run also writes a compact per-account summary (deposit-adjusted P&L + bot-vs-owner split) there.
+const round = (n: number): number => Math.round(n);
+function closerJson(s: CloserSlice): { trips: number; net: number; netPct: number | null; cost: number } {
+  return { trips: s.trips, net: round(s.netPnl), netPct: s.netReturnPct, cost: round(s.netCost) };
+}
+function summarize(account: string, label: string, report: RealizedPnlReport): Record<string, unknown> {
+  const o = report.totals;
+  return {
+    account,
+    label,
+    options: {
+      net: round(o.netPnl),
+      netPct: o.netReturnPct,
+      cost: round(o.netCost),
+      fees: round(o.fees),
+      byCloser: {
+        bot: closerJson(report.byCloser.bot),
+        owner: closerJson(report.byCloser.owner),
+        unknown: closerJson(report.byCloser.unknown),
+      },
+    },
+    equity: { netCashFlow: round(report.equity.netCashFlow), net: round(report.equity.totals.netPnl) },
+    complete: !report.fetchAudit?.incomplete,
+  };
+}
 
 const ACCOUNTS: [string, string][] = [
   ["5WU18519", "cash"],
@@ -82,7 +113,7 @@ async function reportAccount(
   account: string,
   label: string,
   startDate: string,
-): Promise<void> {
+): Promise<Record<string, unknown> | null> {
   console.log(`\n=== ${label} (${account}) — realized round-trips since ${startDate} ===`);
 
   const { rows, audit } = await fetchAllPages((params) =>
@@ -90,7 +121,7 @@ async function reportAccount(
   );
   if (rows.length === 0 && audit.incomplete) {
     console.log(`  ledger error: ${audit.reason}`);
-    return;
+    return null;
   }
 
   const orderSources = await fetchOrderSources(orders, account, startDate);
@@ -98,6 +129,7 @@ async function reportAccount(
   for (const line of formatRealizedPnlReport(report)) {
     console.log(line);
   }
+  return summarize(account, label, report);
 }
 
 async function main() {
@@ -108,8 +140,16 @@ async function main() {
     orderService: OrderService;
   };
 
+  const accounts: Record<string, unknown>[] = [];
   for (const [account, label] of ACCOUNTS) {
-    await reportAccount(client.transactionsService, client.orderService, account, label, startDate);
+    const summary = await reportAccount(client.transactionsService, client.orderService, account, label, startDate);
+    if (summary) accounts.push(summary);
+  }
+
+  const jsonPath = process.env.REALIZED_PNL_JSON;
+  if (jsonPath) {
+    writeFileSync(jsonPath, JSON.stringify({ generatedAt: new Date().toISOString(), startDate, accounts }, null, 2));
+    console.log(`\n  → wrote ${jsonPath} (${accounts.length} accounts) for the Owl dashboard`);
   }
 }
 

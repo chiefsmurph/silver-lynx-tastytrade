@@ -191,6 +191,8 @@ export interface FetchAudit {
 export interface RealizedPnlReport {
   trips: Trip[];
   totals: BlendedTotals;
+  /** Options P&L split by who CLOSED each round trip (bot / owner / unknown) — the bot-vs-hand question. */
+  byCloser: Record<Closer, CloserSlice>;
   reconciliation: Reconciliation;
   equity: EquitySummary;
   /** Null when the caller did not page (and so cannot vouch for completeness). */
@@ -773,6 +775,11 @@ export function buildRealizedPnlReport(
   return {
     trips: fifo.trips,
     totals: blend(fifo.trips),
+    byCloser: {
+      bot: slice(fifo.trips, "bot"),
+      owner: slice(fifo.trips, "owner"),
+      unknown: slice(fifo.trips, "unknown"),
+    },
     reconciliation: {
       rowsExamined: source.length,
       openLegs: fifo.openLegs,
@@ -820,6 +827,15 @@ export function formatRealizedPnlReport(report: RealizedPnlReport): string[] {
       `  ---- gross (pre-fee): ${signed(t.grossReturnPct ?? 0)}%  |  ` +
         `fees $${t.fees.toFixed(0)} = ${(t.feeDragPp ?? 0).toFixed(2)}pp of cost basis`,
     );
+    // The bot-vs-hand split. Only shown when attribution actually happened (order
+    // history was supplied); with everything "unknown" the split restates the blend.
+    if (report.byCloser.bot.trips > 0 || report.byCloser.owner.trips > 0) {
+      for (const closer of ["bot", "owner", "unknown"] as const) {
+        if (report.byCloser[closer].trips > 0) {
+          lines.push(formatCloserSlice(closer, report.byCloser[closer]));
+        }
+      }
+    }
   }
 
   // Every open leg reaches a terminal state; this line is the proof.
