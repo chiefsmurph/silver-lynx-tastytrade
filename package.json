@@ -15,7 +15,8 @@
     "fallow": "fallow audit",
     "fallow:health": "fallow health",
     "fallow:dead": "fallow dead-code",
-    "fallow:fix": "fallow fix --dry-run"
+    "fallow:fix": "fallow fix --dry-run",
+    "realized-pnl:refresh": "REALIZED_PNL_JSON=data/realized-pnl.json node --import tsx src/tools/realized-pnl.ts 2026-06-01"
   },
   "dependencies": {
     "@dxfeed/dxlink-api": "^0.3.0",
